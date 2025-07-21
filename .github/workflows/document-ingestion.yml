@@ -1,0 +1,80 @@
+name: EchoNexus Document Processing Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      bucket_name:
+        description: 'Cloud Storage bucket containing documents'
+        required: true
+        type: string
+      processing_mode:
+        description: 'Processing mode'
+        required: true
+        default: 'batch'
+        type: choice
+        options:
+        - batch
+        - streaming
+        - memory_optimized
+
+  repository_dispatch:
+    types: [process_documents]
+
+jobs:
+  setup-cloud-processing:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install Dependencies
+      run: |
+        pip install -r requirements.txt
+    
+    - name: Setup Google Cloud SDK
+      uses: google-github-actions/setup-gcloud@v1
+      with:
+        project_id: ${{ secrets.GCP_PROJECT_ID }}
+        service_account_key: ${{ secrets.GCP_SA_KEY }}
+        export_default_credentials: true
+    
+    - name: Trigger Cloud Build Processing
+      env:
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # Create Cloud Build trigger
+        gcloud builds submit \
+          --config=cloudbuild.yaml \
+          --substitutions=_OPENAI_API_KEY="${OPENAI_API_KEY}",_GITHUB_TOKEN="${GITHUB_TOKEN}" \
+          .
+    
+    - name: Monitor Processing Status
+      run: |
+        echo "Monitoring cloud processing..."
+        python monitor_cloud_processing.py \
+          --bucket-name="${{ github.event.inputs.bucket_name || 'default-bucket' }}" \
+          --timeout=3600
+    
+    - name: Validate Processing Results
+      run: |
+        echo "Validating processing results..."
+        python validate_processing.py \
+          --output-bucket="echo-nexus-documents-1753094909-processed"
+    
+    - name: Update Knowledge Base
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # Trigger knowledge base update
+        curl -X POST \
+          -H "Authorization: token ${GITHUB_TOKEN}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          https://api.github.com/repos/${{ github.repository_owner }}/Echo_AI/dispatches \
+          -d '{"event_type":"knowledge_base_update","client_payload":{"bucket":"echo-nexus-documents-1753094909-processed"}}'
